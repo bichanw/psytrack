@@ -11,14 +11,15 @@ def generateSim(K=4,
                 boundary=4.0,
                 iterations=20,
                 seed=None,
-                savePath=None):
+                savePath=None,
+                gaussian=False):
     '''Simulates weights, inputs, and choices under the model.
 
     Args:
         K : int, number of weights to simulate
         N : int, number of trials to simulate
         hyper : dict, hyperparameters and initial values used to construct the
-            prior. Default is none, can include sigma, sigInit, sigDay
+            prior. Default is none, can include sigma, sigInit, sigDay, sigmay
         days : list or array, list of the trial indices on which to apply the
             sigDay hyperparameter instead of the sigma
         boundary : float, weights are reflected from this boundary
@@ -26,9 +27,11 @@ def generateSim(K=4,
         iterations : int, # of behavioral realizations to simulate,
             same input and weights can render different choice due
             to probabilistic model, iterations are saved in 'all_Y'
+            (ignored if gaussian=True)
         seed : int, random seed to make random simulations reproducible
         savePath : str, if given creates a folder and saves simulation data
             in a file; else data is returned
+        gaussian : bool, if True uses Gaussian noise model instead of logistic
 
     Returns:
         save_path | (if savePath) : str, the name of the folder+file where
@@ -44,6 +47,10 @@ def generateSim(K=4,
     sigmaDefault = 2**np.random.choice([-4.0, -5.0, -6.0, -7.0, -8.0], size=K)
     sigInitDefault = np.array([4.0] * K)
     sigDayDefault = 2**np.random.choice([1.0, 0.0, -1.0], size=K)
+    
+    # Handle sigmay default for Gaussian case
+    if gaussian:
+        sigmayDefault = np.array([.1])
 
     if 'sigma' not in hyper:
         sigma = sigmaDefault
@@ -85,6 +92,21 @@ def generateSim(K=4,
         raise Exception('hyper["sigDay"] must be either a scalar or a list or '
                         'array of len K.')
 
+    # Handle sigmay hyperparameter for Gaussian case
+    if gaussian:
+        if 'sigmay' not in hyper:
+            sigmay = sigmayDefault
+        elif hyper['sigmay'] is None:
+            sigmay = sigmayDefault
+        elif np.isscalar(hyper['sigmay']):
+            sigmay = np.array([hyper['sigmay']])
+        elif ((type(hyper['sigmay']) in [np.ndarray, list]) and
+              (len(hyper['sigmay']) == 1)):
+            sigmay = hyper['sigmay']
+        else:
+            raise Exception('hyper["sigmay"] must be either a scalar or a list or '
+                            'array of len 1.')
+
     # -------------
     # Simulation
     # -------------
@@ -123,15 +145,24 @@ def generateSim(K=4,
         'K': K,
         'N': N,
     }
+    
+    # Add sigmay for Gaussian case
+    if gaussian:
+        save_dict['sigmay'] = sigmay
 
     # Simulate behavioral realizations in advance
-    pR = 1.0 / (1.0 + np.exp(-np.sum(X * W, axis=1)))
-
-    all_simy = []
-    for i in range(iterations):
-        sim_y = (pR > np.random.rand(
-            len(pR))).astype(int) + 1  # 1 for L, 2 for R
-        all_simy += [sim_y]
+    if gaussian:
+        # Gaussian case: continuous output with noise
+        all_simy = np.sum(X * W, axis=1) + np.random.normal(scale=sigmay, size=N)
+        print(f"sigmay = {sigmay}")
+    else:
+        # Logistic case: binary choices with iterations
+        pR = 1.0 / (1.0 + np.exp(-np.sum(X * W, axis=1)))
+        all_simy = []
+        for i in range(iterations):
+            sim_y = (pR > np.random.rand(
+                len(pR))).astype(int) + 1  # 1 for L, 2 for R
+            all_simy += [sim_y]
 
     # Update saved data to include behavior
     save_dict.update({'all_Y': all_simy})
