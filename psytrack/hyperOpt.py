@@ -3,9 +3,13 @@ from scipy.optimize import minimize
 from scipy.sparse import csc_matrix
 from scipy.sparse.linalg import spsolve
 
-from .getMAP import getMAP, getPosteriorTerms
+from .getMAP import getMAP, getPosteriorTerms, getPosteriorTermsGauss
 from psytrack.helper.invBlkTriDiag import getCredibleInterval
 from psytrack.helper.jacHessCheck import compHess
+import pickle
+import time
+import os
+import traceback
 from psytrack.helper.helperFunctions import (
     DTinv_v,
     Dinv_v,
@@ -18,7 +22,7 @@ from psytrack.helper.helperFunctions import (
 
 
 def hyperOpt(dat, hyper, weights, optList, method=None, showOpt=0, jump=2,
-             hess_calc="weights"):
+             hess_calc="weights",gaussian=False):
     '''Optimizes for hyperparameters and weights.
     
     Given data and set of hyperparameters, uses decoupled Laplace to find the
@@ -76,6 +80,7 @@ def hyperOpt(dat, hyper, weights, optList, method=None, showOpt=0, jump=2,
     # Hyperparameter Optimization
     # -----
 
+    print('changed version')
     current_jump = jump
     while True:
 
@@ -91,7 +96,8 @@ def hyperOpt(dat, hyper, weights, optList, method=None, showOpt=0, jump=2,
             weights,
             E0=E0,
             method=method,
-            showOpt=int(showOpt > 1))
+            showOpt=int(showOpt > 1),
+            gaussian=gaussian)
 
         # Update best variables
         if best_logEvd is None:
@@ -151,10 +157,12 @@ def hyperOpt(dat, hyper, weights, optList, method=None, showOpt=0, jump=2,
         eMode = llstruct['eMode']
 
         LL_v = DTinv_v(H @ Dinv_v(eMode, K), K) + ddlogprior @ eMode
+        # D'-1 Hess_LL D-1 w_map + Hess_prior w_map
 
         opt_keywords.update({
             'LL_terms': llstruct['lT']['ddlogli'],
-            'LL_v': LL_v
+            'LL_v': LL_v,
+            'gaussian':gaussian
         })
 
         # Optimize over hyperparameters
@@ -174,20 +182,52 @@ def hyperOpt(dat, hyper, weights, optList, method=None, showOpt=0, jump=2,
             else:
                 optVals += np.log2(current_hyper[val]).tolist()
 
-        result = minimize(
-            hyperOpt_lossfun,
-            optVals,
-            args=opt_keywords,
-            method='BFGS',
-            options=opts,
-            callback=callback,
-        )
+        try:
+            result = minimize(
+                hyperOpt_lossfun,
+                optVals,
+                args=opt_keywords,
+                method='L-BFGS-B', # L-BFGS-B
+                options=opts,
+                callback=callback,
+            )
+        except Exception as e:
 
+            dump = {
+            'optVals': optVals,
+            'opt_keywords': opt_keywords,
+            'opts': opts,
+            'callback': callback,
+            'current_hyper': current_hyper,
+            'best_hyper': best_hyper if 'best_hyper' in locals() else None,
+            'best_logEvd': best_logEvd if 'best_logEvd' in locals() else None,
+            'weights': weights,
+            'dat': dat,
+            'hyper': hyper,
+            'optList': optList,
+            'method': method,
+            'showOpt': showOpt,
+            'jump': jump,
+            'traceback': traceback.format_exc(),
+            }
+
+            # fname = f"/tmp/hyperOpt_error_{int(time.time())}_{os.getpid()}.pkl"
+            fname = "/usr/people/bichanw/SpikeSorting/Codes/psytrack/data/hyperopt_error.pkl"
+            print(f"An error occurred during hyperOpt minimize; "
+                  f"dumping relevant variables to: {fname}")
+            try:
+                with open(fname, "wb") as fh:
+                    pickle.dump(dump, fh, protocol=pickle.HIGHEST_PROTOCOL)
+            except Exception:
+                # If saving fails, include that info in the raised exception below.
+                fname = f"failed to write /tmp/hyperOpt_error file"
+            raise RuntimeError(f"hyperOpt minimize failed; relevant variables saved to: {fname}") from e
+
+        # Check for convergence of hyperparameters
         diff = np.linalg.norm((optVals - result.x) / optVals)
         if showOpt:
             print('\nRecovered evidence:', np.round(-result.fun, 5))
             print('\nDifference:', np.round(diff, 4))
-            
         if diff > 0.1:
             count = 0
             for val in optList:
@@ -195,8 +235,8 @@ def hyperOpt(dat, hyper, weights, optList, method=None, showOpt=0, jump=2,
                     current_hyper.update({val: 2**result.x[count]})
                     count += 1
                 else:
-                    current_hyper.update({val: 2**result.x[count:count + K]})
-                    count += K
+                    current_hyper.update({val: 2**result.x[count:count + len(current_hyper[val])]})
+                    count += len(current_hyper[val])
                 if showOpt:
                     print(val, np.round(np.log2(current_hyper[val]), 4))
         else:
@@ -249,8 +289,9 @@ def hyperOpt_lossfun(optVals, keywords):
             hyper.update({val: 2**optVals[count]})
             count += 1
         else:
-            hyper.update({val: 2**optVals[count:count + K]})
-            count += K
+            # hyper.update({val: 2**optVals[count:count + K]})
+            hyper.update({val: 2**optVals[count:count + len(hyper[val])]}) 
+            count += len(hyper[val])
 
     # Determine type of analysis (standard, constant, or day weights)
     if method is None:
@@ -277,14 +318,19 @@ def hyperOpt_lossfun(optVals, keywords):
     LL_v = keywords['LL_v']
 
     # Decoupled Laplace appx to new epsilon given new sigma
-    DL_1 = DTv(LL_v, K)
-    DL_2 = DT_X_D(ddlogprior, K)
-    DL_3 = spsolve(DL_2 + H, DL_1)
-    E_flat = Dv(DL_3, K)
+    DL_1 = DTv(LL_v, K) 
+    DL_2 = DT_X_D(ddlogprior, K) # C^-1?
+    DL_3 = spsolve(DL_2 + H, DL_1) # DL_2+H is -Gamma? getting nan values
+    E_flat = Dv(DL_3, K) # getting some nan values here as well
 
     # Calculate likelihood and prior terms with new epsilon
-    pT, lT, _ = getPosteriorTerms(
-        E_flat, hyper=hyper, method=method, dat=dat, weights=weights)
+    gaussian=keywords.get('gaussian',False)
+    if gaussian:
+        pT, lT, _ = getPosteriorTermsGauss(
+            E_flat, hyper=hyper, method=method, dat=dat, weights=weights)
+    else:
+        pT, lT, _ = getPosteriorTerms(
+            E_flat, hyper=hyper, method=method, dat=dat, weights=weights)
 
     # Calculate posterior term, then approximate evidence for new sigma
     center = DL_2 + lT['ddlogli']['H']

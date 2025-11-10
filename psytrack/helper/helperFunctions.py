@@ -68,20 +68,60 @@ def make_invSigma(hyper, days, missing_trials, N, K):
         (sparse array): prior matrix
     '''
 
-    # Note: setting a sigma value at index i, adjusts the change between trials i-1 and i
-    sigma = hyper['sigma']
+    # save all inputs to pickle
+    # import pickle
+    # with open('make_invSigma_inputs.pkl', 'wb') as f:
+    #     pickle.dump({'hyper': hyper, 'days': days, 'missing_trials': missing_trials, 'N': N, 'K': K}, f)
+    # raise Exception("Exiting after saving inputs for debugging")
 
-    if 'sigInit' in hyper and hyper['sigInit'] is not None:
-        sigInit = hyper['sigInit']
+    # indexing sigma by ind
+    if 'sigmas_by_ind' in hyper:
+        if 'sigInit' in hyper and hyper['sigInit'] is not None:
+            sigInit = hyper['sigInit']
+        else:
+            sigInit = hyper['sigmas_by_ind'][0]
+        
+        # get other variables
+        # sigmas_by_ind = np.array(hyper['sigmas_by_ind']).reshape(-1, len(hyper['ind']))
+        sigmas_by_ind = hyper['sigmas_by_ind']
+        # check number of sigmas match number of features
+        if len(sigmas_by_ind) != K * len(hyper['ind']):
+            raise Exception('number of sigmas provided is not K')
+        
+        ind = hyper['ind']
+        # techincally should also check here if indices combined make np.arange(N), but it would cost extra time, so leaving it out and relying on user to provide correct indices
+
+        # variables that are not used
+        sigma = None
+        sigDay = None
+
+    # indexing sigma by within day and across day
     else:
-        sigInit = sigma
+        # Note: setting a sigma value at index i, adjusts the change between trials i-1 and i
+        sigma = hyper['sigma']
 
-    if 'sigDay' in hyper and hyper['sigDay'] is not None:
-        sigDay = hyper['sigDay']
-    else:
-        sigDay = sigma
+        if 'sigInit' in hyper and hyper['sigInit'] is not None:
+            sigInit = hyper['sigInit']
+        else:
+            sigInit = sigma
 
-    if np.isscalar(sigma):
+        if 'sigDay' in hyper and hyper['sigDay'] is not None:
+            sigDay = hyper['sigDay']
+        else:
+            sigDay = sigma
+
+
+    if 'sigmas_by_ind' in hyper:
+        invSigma_flat = np.zeros(N * K)
+        offset = 0
+        for k in range(K):
+            invSigma_flat[offset] = sigInit**2  # add sigInit to beginning
+            for i, idx in enumerate(ind):
+                invSigma_flat[offset + idx] = sigmas_by_ind[i + k * len(ind)]**2
+            offset += N
+        return diags(invSigma_flat**-1)
+    
+    elif np.isscalar(sigma):
         invSigma_flat_k = np.ones(N) * sigma**2
         invSigma_flat_k[days] = sigDay**2  # add sigDay to day changes
         invSigma_flat_k[0] = sigInit**2  # add sigInit to beginning

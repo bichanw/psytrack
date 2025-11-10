@@ -13,7 +13,7 @@ from psytrack.helper.helperFunctions import (
 )
 
 
-def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0):
+def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0,gaussian=False):
     '''Estimates epsilon parameters with a random walk prior.
 
     Args:
@@ -51,7 +51,7 @@ def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0):
     # Check validity of 'y', must be 1 and 2 (fix automatically if 0 and 1)
     if np.array_equal(np.unique(dat['y']), [0, 1]):
         dat['y'] += 1
-    elif not np.array_equal(np.unique(dat['y']), [1, 2]):
+    elif not gaussian and not np.array_equal(np.unique(dat['y']), [1, 2]):
         raise Exception('getMAP_PBups: y must be parametrized as 1 and 2 only.')
 
     # Check and count weights
@@ -89,7 +89,7 @@ def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0):
         eInit = np.zeros(w_N * K)
 
     # Do sanity checks on hyperparameters
-    if 'sigma' not in hyper:
+    if 'sigma' not in hyper and 'sigmas_by_ind' not in hyper:
         raise Exception('WARNING: sigma not specified in hyper dict')
     if 'alpha' in hyper:
         raise Exception('WARNING: alpha is not supported')
@@ -119,7 +119,10 @@ def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0):
     # -----
 
     # Prepare minimization of loss function, Memoize to preserve Jac+Hess info
-    lossfun = memoize(negLogPost)
+    if gaussian:
+        lossfun = memoize(negLogPostGauss)
+    else:
+        lossfun = memoize(negLogPost)
     my_args = (dat, hyper, weights, method)
 
     if showOpt:
@@ -174,7 +177,10 @@ def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0):
     # Prior and likelihood at eMode, also recovering the associated wMode
     if showOpt:
         print('Calculating evd, first prior and likelihood at eMode...')
-    pT, lT, wMode = getPosteriorTerms(eMode, *my_args)
+    if gaussian:
+        pT, lT, wMode = getPosteriorTermsGauss(eMode, *my_args)
+    else:
+        pT, lT, wMode = getPosteriorTerms(eMode, *my_args)
 
     # Posterior term (with Laplace approx), calculating sparse log determinant
     if showOpt:
@@ -210,6 +216,30 @@ def negLogPost(*args):
 
     # Get prior and likelihood terms
     [priorTerms, liTerms, _] = getPosteriorTerms(*args)  # pylint: disable=no-value-for-parameter
+
+    # Negative log posterior
+    negL = -priorTerms['logprior'] - liTerms['logli']
+    dL = -priorTerms['dlogprior'] - liTerms['dlogli']
+    ddL = {'ddlogprior': priorTerms['ddlogprior'], **liTerms['ddlogli']}
+
+    return negL, dL, ddL
+
+def negLogPostGauss(*args):
+    '''Returns negative log posterior (and its first and second derivative)
+    Intermediary function to allow for getPosteriorTerms to be optimized
+
+    Args:
+        same as getPosteriorTerms()
+
+    Returns:
+        negL : negative log-likelihood of the posterior
+        dL : 1st derivative of the negative log-likelihood
+        ddL : 2nd derivative of the negative log-likelihood,
+            kept as a dict of sparse terms!
+    '''
+
+    # Get prior and likelihood terms
+    [priorTerms, liTerms, _] = getPosteriorTermsGauss(*args)  # pylint: disable=no-value-for-parameter
 
     # Negative log posterior
     negL = -priorTerms['logprior'] - liTerms['logli']
@@ -320,6 +350,123 @@ def getPosteriorTerms(E_flat, dat, hyper, weights, method=None):
 
     # Calculate the log-likelihood and 1st & 2nd derivatives
     logli = np.sum(y * gw - np.logaddexp(0, gw))
+    dlogli = DTinv_v(dlliList.flatten('F'), K)
+    # dlogli = dlliList.flatten('C')
+    ddlogli = {'H': myblk_diags(HlliList), 'K': K}
+
+    # print("passed here")
+    liTerms = {'logli': logli, 'dlogli': dlogli, 'ddlogli': ddlogli}
+
+    return priorTerms, liTerms, W
+
+def getPosteriorTermsGauss(E_flat, dat, hyper, weights, method=None):
+    '''Given a sequence of parameters formatted as an N*K matrix, calculates
+    random-walk log priors & likelihoods and their derivatives
+
+    Args:
+        E_flat : array, the N*K epsilon parameters, flattened to a single
+        vector
+        ** all other args are same as in getMAP **
+
+    Returns:
+        priorTerms : dict, the log-prior as well as 1st + 2nd derivatives
+        liTerms : dict, the log-likelihood as well as 1st + 2nd derivatives
+        W : array, the weights, calculated directly from E_flat
+    '''
+
+    # !!! TEMPORARY --- Need to update !!!
+    if method in ['_days', '_constant']:
+        raise Exception(
+            'Need efficient calculations for _constant or _days methods')
+
+    # ---
+    # Initialization
+    # ---
+
+    # If function is called directly instead of through getMAP,
+    #       fill in dummy values
+    if 'dayLength' not in dat:
+        dat['dayLength'] = np.array([], dtype=int)
+    if 'missing_trials' not in dat:
+        dat['missing_trials'] = None
+
+    # Unpack input into g
+    g = read_input(dat, weights)
+    N, K = g.shape
+
+    # Determine type of analysis (standard, constant, or day weights)
+    if method is None:
+        w_N = N
+        # the first trial index of each new day
+        days = np.cumsum(dat['dayLength'], dtype=int)[:-1]
+        missing_trials = dat['missing_trials']
+    elif method == '_constant':
+        w_N = 1
+        days = np.array([], dtype=int)
+        missing_trials = None
+    elif method == '_days':
+        w_N = len(dat['dayLength'])
+        days = np.arange(1, w_N, dtype=int)
+        missing_trials = None
+    else:
+        raise Exception('method ' + method + ' not supported')
+
+    # Check shape of epsilon, with
+    #   w_N (effective # of trials) * K (# of weights) elements
+    if E_flat.shape != (w_N * K,):
+        print(E_flat.shape, w_N, K, method)
+        raise Exception('parameter dimension mismatch (#trials * #weights)')
+
+    # ---
+    # Construct random-walk prior, calculate priorTerms
+    # ---
+
+    # Construct random walk covariance matrix Sigma^-1, use sparsity for speed
+    invSigma = make_invSigma(hyper, days, missing_trials, w_N, K)
+
+    # Calculate the log-determinant of prior covariance,
+    #   the log-prior, 1st, & 2nd derivatives
+    logdet_invSigma = np.sum(np.log(invSigma.diagonal()))
+    logprior = (1 / 2) * (logdet_invSigma - E_flat @ invSigma @ E_flat)
+    dlogprior = -invSigma @ E_flat
+    ddlogprior = -invSigma
+
+    priorTerms = {
+        'logprior': logprior,
+        'dlogprior': dlogprior,
+        'ddlogprior': ddlogprior,
+    }
+
+    # ---
+    # Construct likelihood, calculate liTerms
+    # ---
+
+    # Reconstruct actual weights from E values
+    E = np.reshape(E_flat, (K, w_N), order='C')
+    W = np.cumsum(E, axis=1)
+
+    # Calculate probability of Right on each trial
+    y = dat['y'] - 1
+    gw = np.sum(g * W.T, axis=1) # T x 1 (namely N samples by 1) vector of w_t' * x_t
+    # pR = 1 / (1 + np.exp(-gw))
+
+    # Preliminary calculations for 1st and 2nd derivatives
+    # dlliList = g * (y - pR)[:, None]
+    dlliList = g * (y - gw)[:, None] / (hyper['sigmay']**2)
+
+    # this is only dependent on hyperparameters
+    # not sure yet if should be put outside this function or anywhere else
+    # for speed purpose
+    HlliList = - (g[:, :, None] @ g[:, None, :]) / (hyper['sigmay'] ** 2)
+
+    # INSERT CODE HERE TO HANDLE _days OR _constant METHODS
+
+    # Calculate the log-likelihood and 1st & 2nd derivatives
+    # logli = np.sum(y * gw - np.logaddexp(0, gw))
+    logli = ( #-0.5 * N * np.log(2 * np.pi)
+        - N * np.log(hyper['sigmay'])
+        - 0.5 * np.sum((y - gw) ** 2) / (hyper['sigmay'] ** 2)
+    )
     dlogli = DTinv_v(dlliList.flatten('F'), K)
     ddlogli = {'H': myblk_diags(HlliList), 'K': K}
 
