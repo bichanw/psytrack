@@ -17,7 +17,7 @@ ZORDER = {'bias' : 2,
           'c' : 1, 'h' : 1, 's_avg' : 1}
 
 
-def plot_weights(W, weight_dict=None, figsize=(5, 2),
+def plot_weights(W, weight_dict=None, figsize=(5, 2), ax=None,
                  colors=None, zorder=None, errorbar=None, days=None):
     '''Plots weights in a quick and reasonable way.
     
@@ -54,12 +54,16 @@ def plot_weights(W, weight_dict=None, figsize=(5, 2),
         zorder = {i: i+1 for i in range(K)}
 
     # Plot weights and credible intervals
-    fig = plt.figure(figsize=figsize)        
+    if ax is None:
+        fig = plt.figure(figsize=figsize)        
+        ax = fig.add_subplot(111)
+    else:
+        fig = ax.get_figure()
     for i, w in enumerate(labels):
-        plt.plot(W[i], lw=1.5, alpha=0.8, ls='-', c=colors[w],
+        ax.plot(W[i], lw=1.5, alpha=0.8, ls='-', c=colors[w],
                  zorder=zorder[w], label=w)
         if errorbar is not None:  # Plot 95% credible intervals on weights
-            plt.fill_between(np.arange(N),
+            ax.fill_between(np.arange(N),
                              W[i]-1.96*errorbar[i], W[i]+1.96*errorbar[i], 
                              facecolor=colors[w], zorder=zorder[w], alpha=0.2)
 
@@ -71,15 +75,15 @@ def plot_weights(W, weight_dict=None, figsize=(5, 2),
             days = np.cumsum(days)
         for d in days:
             if d < N:
-                plt.axvline(d, c='black', ls='-', lw=0.5, alpha=0.5, zorder=0)
+                ax.axvline(d, c='black', ls='-', lw=0.5, alpha=0.5, zorder=0)
 
     # Further tweaks to make plot nice
-    plt.gca().spines['right'].set_visible(False)
-    plt.gca().spines['top'].set_visible(False)
-    plt.axhline(0, c='black', ls='--', lw=1, alpha=0.5, zorder=0)
-    plt.gca().set_yticks(np.arange(-int(2*maxval), int(2*maxval)+1,1))
-    plt.ylim(-maxval, maxval); plt.xlim(0, N)
-    plt.xlabel('Trial #'); plt.ylabel('Weights')
+    ax.spines['right'].set_visible(False)
+    ax.spines['top'].set_visible(False)
+    ax.axhline(0, c='black', ls='--', lw=1, alpha=0.5, zorder=0)
+    ax.set_yticks(np.arange(-int(2*maxval), int(2*maxval)+1,1))
+    ax.set_ylim(-maxval, maxval); ax.set_xlim(0, N)
+    ax.set_xlabel('Trial #'); ax.set_ylabel('Weights')
     
     return fig
     
