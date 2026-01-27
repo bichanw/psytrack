@@ -1,6 +1,49 @@
 from scipy.sparse.linalg import splu
-from scipy.sparse import isspmatrix_csc, diags
+from scipy.sparse import isspmatrix_csc, diags, csr_matrix
 import numpy as np
+
+def commutation_matrix(m, n):
+    idx = np.arange(m * n)
+    rows = idx
+    cols = idx.reshape((m, n), order='F').T.reshape(-1, order='F')
+    K = csr_matrix((m * n, m * n), dtype=int)
+    K[rows, cols] = 1
+    return K
+
+def X_to_Xfull(g):
+    # construct full X matrix
+    # Create row indices: [0,0,...,0, 1,1,...,1, ..., w_N-1,w_N-1,...,w_N-1]
+    w_N = g.shape[0]
+    K = g.shape[1]
+    # Each row i appears K times
+    rows = np.repeat(np.arange(w_N), K)
+
+    # Create column indices: [0,1,...,K-1, K,K+1,...,2K-1, ..., (w_N-1)*K,...,w_N*K-1]
+    cols = np.arange(w_N * K)
+
+    # Create tmmporary data: flatten g row by row
+    tmp = g.flatten()
+
+    # Construct sparse matrix directly (much more memory efficient)
+    X_full = csr_matrix((tmp, (rows, cols)), shape=(w_N, w_N * K))
+
+    return X_full
+
+def xtx_neural(X, tr_start):
+    '''
+    calculate X'X for neural signal
+    Args:
+        X: neural signal, size N x K
+        tr_start: starting index of each trial, size N_tr + 1
+    Returns:
+        xtx: size N_tr x K x K, for inputting into myblk_diags
+    '''
+    N_tr = tr_start.shape[0] - 1
+    K = X.shape[1]
+    xtx = np.zeros((N_tr, K, K))
+    for i in range(N_tr):
+        xtx[i] = X[tr_start[i]:tr_start[i+1]].T @ X[tr_start[i]:tr_start[i+1]]
+    return xtx
 
 
 def myblk_diags(A):

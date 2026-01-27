@@ -11,3 +11,9 @@ dist/
 .DS_Store
 build/
 MANIFEST
+
+# related files
+data/
+results/
+# wip files, will move into examples/ once done
+notebooks/ 

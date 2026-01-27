@@ -6,6 +6,12 @@ PsyTrack is a package for fitting a dynamic psychophysical model to behavioral d
 
 [//]: # ()
 
+## Things I've changed in my fork
+- Gaussian emission (along with simulation)
+- arbitrary indexing of sigmas
+- allows you to initialize `E` (`dW`) with non-zero values
+
+
 ## Documentation
 
 Documentation and examples can be found in [`ExampleNotebook.ipynb`](./psytrack/examples/ExampleNotebook.ipynb)

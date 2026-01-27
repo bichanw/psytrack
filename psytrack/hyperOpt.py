@@ -3,7 +3,7 @@ from scipy.optimize import minimize
 from scipy.sparse import csc_matrix
 from scipy.sparse.linalg import spsolve
 
-from .getMAP import getMAP, getPosteriorTerms, getPosteriorTermsGauss
+from .getMAP import getMAP, getPosteriorTerms, getPosteriorTermsGauss, getPosteriorTermsNeural
 from psytrack.helper.invBlkTriDiag import getCredibleInterval
 from psytrack.helper.jacHessCheck import compHess
 import pickle
@@ -18,11 +18,12 @@ from psytrack.helper.helperFunctions import (
     DT_X_D,
     make_invSigma,
     sparse_logdet,
+    read_input,
 )
 
 
 def hyperOpt(dat, hyper, weights, optList, method=None, showOpt=0, jump=2,
-             hess_calc="weights",gaussian=False):
+             hess_calc="weights",gaussian=False,E0=None):
     '''Optimizes for hyperparameters and weights.
     
     Given data and set of hyperparameters, uses decoupled Laplace to find the
@@ -49,6 +50,9 @@ def hyperOpt(dat, hyper, weights, optList, method=None, showOpt=0, jump=2,
             computed with the numerical hessian and returned. If 'All', then
             a dict with standard errors for both the weights and the
             hyperparameters is returned.
+        gaussian : bool, whether to use Gaussian likelihood (True) or Bernoulli
+            likelihood (False)
+        E0 : array-like, initial weights for optimization (optional)
 
     Returns:
         best_hyper : hyperparameter values that maximizes evidence of data
@@ -68,6 +72,9 @@ def hyperOpt(dat, hyper, weights, optList, method=None, showOpt=0, jump=2,
         'method': method,
     }
 
+    # pre-compute input design matrix
+    dat['g'] = read_input(dat, weights)
+
     current_hyper = hyper.copy()
     best_logEvd = None
 
@@ -80,13 +87,12 @@ def hyperOpt(dat, hyper, weights, optList, method=None, showOpt=0, jump=2,
     # Hyperparameter Optimization
     # -----
 
-    print('changed version')
+    print('running local psytrack hyperOpt', flush=True)
     current_jump = jump
     while True:
 
-        if best_logEvd is None:
-            E0 = None
-        else:
+        # !!! here we can add other initialization for E0, default is None
+        if best_logEvd is not None:
             E0 = llstruct['eMode']  # pylint: disable=used-before-assignment
 
         # First get MAP for initial hyperparameter setting
@@ -295,7 +301,10 @@ def hyperOpt_lossfun(optVals, keywords):
 
     # Determine type of analysis (standard, constant, or day weights)
     if method is None:
-        w_N = N
+        if 'tr_start' in dat:
+            w_N = dat['tr_start'].shape[0] - 1
+        else:
+            w_N = N
         # the first trial index of each new day
         days = np.cumsum(dat['dayLength'], dtype=int)[:-1]
         missing_trials = dat['missing_trials']
@@ -324,13 +333,17 @@ def hyperOpt_lossfun(optVals, keywords):
     E_flat = Dv(DL_3, K) # getting some nan values here as well
 
     # Calculate likelihood and prior terms with new epsilon
-    gaussian=keywords.get('gaussian',False)
-    if gaussian:
-        pT, lT, _ = getPosteriorTermsGauss(
-            E_flat, hyper=hyper, method=method, dat=dat, weights=weights)
+    if 'tr_start' in dat:
+        pT, lT, _ = getPosteriorTermsNeural(
+            E_flat, dat=dat, hyper=hyper, weights=weights, method=method)
     else:
-        pT, lT, _ = getPosteriorTerms(
-            E_flat, hyper=hyper, method=method, dat=dat, weights=weights)
+        gaussian=keywords.get('gaussian',False)
+        if gaussian:
+            pT, lT, _ = getPosteriorTermsGauss(
+                E_flat, hyper=hyper, method=method, dat=dat, weights=weights)
+        else:
+            pT, lT, _ = getPosteriorTerms(
+                E_flat, hyper=hyper, method=method, dat=dat, weights=weights)
 
     # Calculate posterior term, then approximate evidence for new sigma
     center = DL_2 + lT['ddlogli']['H']

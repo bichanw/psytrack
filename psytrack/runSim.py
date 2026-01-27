@@ -20,8 +20,7 @@ def generateSim(K=4,
         N : int, number of trials to simulate
         hyper : dict, hyperparameters and initial values used to construct the
             prior. Default is none, can include sigma, sigInit, sigDay, sigmay
-        days : list or array, list of the trial indices on which to apply the
-            sigDay hyperparameter instead of the sigma
+        days : list or array, list of the trial lengths in days
         boundary : float, weights are reflected from this boundary
             during simulation, is a symmetric +/- boundary
         iterations : int, # of behavioral realizations to simulate,
