@@ -94,6 +94,61 @@ def sparse_logdet(A):
         np.log(np.abs(aux.L.diagonal())) + np.log(np.abs(aux.U.diagonal())))
 
 
+def make_dinvSigma(hyper, optList, days, missing_trials, N, K):
+    '''
+    Calculate the partial derivative of the inverse sigma matrix with respect to the hyperparameters
+    '''
+
+    # calculate if indexing by ind
+    if 'sigmas_by_ind' in hyper:
+        sigmas_by_ind = hyper['sigmas_by_ind']
+        sigInit = hyper['sigInit']
+        ind = hyper['ind']
+        dinvSigma_flat = np.zeros((K, N * K))
+        offset = 0
+        for k in range(K):
+            dinvSigma_flat[k,offset] = -2 * sigInit**-3  # add sigInit to beginning
+            for i, idx in enumerate(ind):
+                dinvSigma_flat[k,offset + idx] = -2 * sigmas_by_ind[i + k * len(ind)]**-3
+            offset += N
+
+        return dinvSigma_flat, None
+
+
+    # indexing by within day
+    sigma = hyper['sigma']
+    if type(sigma) in [np.ndarray, list]:
+        if len(sigma) != K:
+            raise Exception('number of sigmas is not K')
+
+        dinvSigma_flat = np.zeros((K, N * K))
+        for k in range(K):
+            dinvSigma_flat[k,(k * N + 1):(k + 1) * N] = -2 * sigma[k]**-3
+
+            if (missing_trials is
+                    not None):  # add extra sigma variance if a test trial gap
+                dinvSigma_flat[k, (k * N + 1):(k + 1) *
+                              N] += missing_trials * -2 * sigma[k]**-3
+    else:
+        raise Exception('scalar sigma not implemented yet')
+
+    # indexing by across day
+    dinvSigDay_flat = None
+    if 'sigDay' in optList:
+        if days is None:
+            raise Exception('days must be provided when sigDay is in optList')
+        dinvSigDay_flat = np.zeros((K, N * K))
+        sigDay = hyper['sigDay']
+        for k in range(K):
+            dinvSigma_flat[k, k * N + days] = 0
+            if np.isscalar(sigDay):
+                dinvSigDay_flat[k, k * N + days] = -2 * sigDay**-3
+            else:
+                dinvSigDay_flat[k, k * N + days] = -2 * sigDay[k]**-3
+            
+
+    return dinvSigma_flat, dinvSigDay_flat
+
 def make_invSigma(hyper, days, missing_trials, N, K):
     '''Returns the banded prior matrix
     
@@ -113,7 +168,7 @@ def make_invSigma(hyper, days, missing_trials, N, K):
 
     # save all inputs to pickle
     # import pickle
-    # with open('make_invSigma_inputs.pkl', 'wb') as f:
+    # with open('make_invSigma.pkl', 'wb') as f:
     #     pickle.dump({'hyper': hyper, 'days': days, 'missing_trials': missing_trials, 'N': N, 'K': K}, f)
     # raise Exception("Exiting after saving inputs for debugging")
 
@@ -309,6 +364,23 @@ def trim(dat, START=0, END=0):
     new_dat['skimmed'] = {'START': START, 'END': END}
 
     return new_dat
+
+
+def DinvT_X_Dinv(A, N, K):
+    '''
+    Computes D^-T @ A @ D^-1, where D is the blocked difference matrix much more quickly
+    D is a block tridiagonal matrix with block size N x N, and K blocks
+    '''
+
+    A4 = A.reshape(K, N, K, N)
+
+    A4 = A4[:, ::-1, :, ::-1]
+    A4 = np.cumsum(np.cumsum(A4, axis=1), axis=3)
+    A4 = A4[:, ::-1, :, ::-1]
+
+    return A4.reshape(K*N, K*N)
+
+    # return np.cumsum(np.cumsum(A[::-1, ::-1], axis=0), axis=1)[::-1, ::-1]
 
 
 def DT_X_D(ddlogprior, K):

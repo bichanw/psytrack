@@ -85,7 +85,7 @@ def plot_weights(W, weight_dict=None, figsize=(5, 2), ax=None,
     ax.set_ylim(-maxval, maxval); ax.set_xlim(0, N)
     ax.set_xlabel('Trial #'); ax.set_ylabel('Weights')
     
-    return fig
+    return fig, ax
     
     
 def plot_performance(dat, xval_pL=None, sigma=50, figsize=(5, 1.5)):

@@ -76,8 +76,8 @@ def gen_evoked_resp(t, kernel_weight = None, tr_len=1000, resp_kernel=None):
     return neural_resp, resp_kernel
 
 
-def generateNeuralSim(K=4,
-                      n_tr=100,
+def generateNeuralSim(K=2,
+                      n_tr=30,
                       tr_len=None,
                       rate=0.01,
                       hyper=None,
@@ -137,7 +137,7 @@ def generateNeuralSim(K=4,
         hyper['sigmay'] = 0.1
     # initial value of weights
     if 'sigInit' not in hyper:
-        hyper['sigInit'] = [1.0] * (K+1)
+        hyper['sigInit'] = [2**4] * (K+1)
 
     # initiate response kernel
     if resp_kernel is None:
@@ -147,7 +147,8 @@ def generateNeuralSim(K=4,
 
     # Generate trial-by-trial weights for this configuration
     tr_weights = generateSim(K=K + 1, N=n_tr, iterations=1, hyper=hyper, boundary=boundary, seed=seed)
-
+    # remove unused Y from tr_weights
+    tr_weights.pop('all_Y')
 
     # Generate inputs and responses
     X = np.ones((tr_start[-1], K))
@@ -183,6 +184,9 @@ def generateNeuralSim(K=4,
     weights = {'x': K + 1}
     hyper_guess = {'sigma': [2**-1] * (K + 1), 'sigmay': hyper['sigmay']}
     optList = ['sigma','sigmay']
+
+    # delete variables to save memory
+    del X, y, t_cues
 
     # save data
     if savePath is not None:

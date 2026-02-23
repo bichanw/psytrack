@@ -1,11 +1,15 @@
 import numpy as np
-from scipy.optimize import minimize
+from scipy.optimize import minimize, OptimizeResult
 import pickle
 
 from psytrack.helper.memoize import memoize
 from psytrack.helper.jacHessCheck import jacHessCheck
 from psytrack.helper.helperFunctions import (
     DT_X_D,
+    # DinvT_X_Dinv,
+    DTv,
+    Dv,
+    Dinv_v,
     sparse_logdet,
     read_input,
     make_invSigma,
@@ -14,6 +18,9 @@ from psytrack.helper.helperFunctions import (
     xtx_neural,
 )
 
+from scipy.sparse.linalg import spsolve
+# from scipy.sparse import csr_matrix
+from scipy.linalg import solve
 
 def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0,gaussian=False):
     '''Estimates epsilon parameters with a random walk prior.
@@ -155,19 +162,53 @@ def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0,gaussian=False):
     try:
         if showOpt:
             print('Obtaining MAP estimate...')
-        
-        # raise Exception('test')
-        result = minimize(
-            lossfun,
-            eInit,
-            jac=lossfun.jacobian,
-            hessp=lossfun.hessian_prod,
-            method='trust-ncg', # Newton-CG
-            tol=1e-9,
-            args=my_args,
-                options=opts,
-                callback=callback,
-            )
+
+        # if True:
+        # if False:
+        if model_type == 'neural' or model_type == 'gaussian':
+            print('using analytic solution to get MAP estimate',flush=True)
+            # analytic solution
+            priorTerms, liTerms, _ = _get_posterior_terms_dispatch(eInit, dat, hyper, weights, method=method, model_type=model_type)
+            J_W = DTv(liTerms['dlogli'], K)
+            H_W = liTerms['ddlogli']['H']
+            Sig_prior_W = -DT_X_D(priorTerms['ddlogprior'], K)
+
+            Sigma_post_inv = -H_W + Sig_prior_W
+            mu_post_W = spsolve(Sigma_post_inv, J_W - H_W @ Dinv_v(eInit, K) )
+            mu_post_dW = Dv(mu_post_W, K)
+
+            # depleted, calculate mu_post in dW space
+            # if 'DPXXPD' not in dat:
+            #     priorTerms, liTerms, _ = _get_posterior_terms_dispatch(eInit, dat, hyper, weights, method=method, model_type=model_type, if_compute_Hll=True)
+            #     dat['DPXXP'] = DinvT_X_Dinv(liTerms['ddlogli']['H'].toarray() * (hyper['sigmay']**2), w_N, K)
+            # else:
+            #     priorTerms, liTerms, _ = _get_posterior_terms_dispatch(eInit, dat, hyper, weights, method=method, model_type=model_type, if_compute_Hll=False)
+
+            # # H = dat['DPXXP'] / (hyper['sigmay']**2)
+            # Sigma_post_inv = -dat['DPXXP'] / (hyper['sigmay']**2) - priorTerms['ddlogprior'].toarray()
+            result = OptimizeResult()
+            result.x = mu_post_dW
+            result.success = True
+            result.message = 'analytic solution'
+        else:
+
+            result = minimize(
+                lossfun,
+                eInit,
+                jac=lossfun.jacobian,
+                hessp=lossfun.hessian_prod,
+                method='trust-ncg', # Newton-CG
+                tol=1e-9,
+                args=my_args,
+                    options=opts,
+                    callback=callback,
+                )
+
+        # print(np.allclose(mu_post_dW, result2.x))
+        # if not np.allclose(mu_post_dW, result2.x):
+        #     raise Exception('mu_post_dW and result2.x are not close')
+
+
     except Exception as e:
         # save all relevant variables to a file
         dump = {
@@ -176,6 +217,9 @@ def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0,gaussian=False):
             'my_args': my_args,
             'opts': opts,
             'error': e,
+            'result': result,
+            'w_N': w_N,
+            'K': K
         }
         with open('/usr/people/bichanw/SpikeSorting/Codes/psytrack/data/getMAP_error.pkl', 'wb') as f:
             pickle.dump(dump, f)
@@ -229,7 +273,7 @@ def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0,gaussian=False):
 
     return wMode, Hess, logEvd, llstruct
 
-def _get_posterior_terms_dispatch(E_flat, dat, hyper, weights, method=None, model_type='standard'):
+def _get_posterior_terms_dispatch(E_flat, dat, hyper, weights, method=None, model_type='standard', if_compute_Hll=True):
     """Helper function to dispatch to the appropriate getPosteriorTerms* function.
     
     Args:
@@ -240,9 +284,9 @@ def _get_posterior_terms_dispatch(E_flat, dat, hyper, weights, method=None, mode
         priorTerms, liTerms, W: same as getPosteriorTerms()
     """
     if model_type == 'neural':
-        return getPosteriorTermsNeural(E_flat, dat, hyper, weights, method)
+        return getPosteriorTermsNeural(E_flat, dat, hyper, weights, method, if_compute_Hll=if_compute_Hll)
     elif model_type == 'gaussian':
-        return getPosteriorTermsGauss(E_flat, dat, hyper, weights, method)
+        return getPosteriorTermsGauss(E_flat, dat, hyper, weights, method, if_compute_Hll=if_compute_Hll)
     elif model_type == 'standard':
         return getPosteriorTerms(E_flat, dat, hyper, weights, method)
     else:
@@ -417,7 +461,7 @@ def getPosteriorTerms(E_flat, dat, hyper, weights, method=None):
 
     return priorTerms, liTerms, W
 
-def getPosteriorTermsNeural(E_flat, dat, hyper, weights, method=None):
+def getPosteriorTermsNeural(E_flat, dat, hyper, weights, method=None, if_compute_Hll=True):
     '''Given a sequence of parameters formatted as an N*K matrix, calculates
     random-walk log priors & likelihoods and their derivatives
 
@@ -456,15 +500,39 @@ def getPosteriorTermsNeural(E_flat, dat, hyper, weights, method=None):
     w_N = dat['tr_start'].shape[0] - 1
 
     # testing phase, no days or missing trials
-    days = np.array([], dtype=int)
-    missing_trials = None
+    if 'days' not in dat:
+        dat['days'] = np.cumsum(dat['dayLength'], dtype=int)[:-1]
+    if 'missing_trials' not in dat:
+        dat['missing_trials'] = None
 
     # ---
     # Construct random-walk prior, calculate priorTerms
     # ---
 
     # Construct random walk covariance matrix Sigma^-1, use sparsity for speed
-    invSigma = make_invSigma(hyper, days, missing_trials, w_N, K)
+    invSigma = make_invSigma(hyper, dat['days'], dat['missing_trials'], w_N, K)
+
+    # scale invSigma?
+    # tr_len = np.diff(dat['tr_start'])
+    # scale = np.concatenate([[tr_len[0]], (tr_len[:-1] + tr_len[1:])/2])
+    # scale = np.tile(scale, K)
+    # invSigma.data[0] *= scale
+    
+
+    # pickle save invSigma
+    # import pickle
+    # to_save = {
+    #     'invSigma': invSigma,
+    #     'hyper': hyper,
+    #     'dat': dat,
+    #     'weights': weights,
+    #     'method': method,
+    # }
+    # with open('getPosteriorTermsNeural.pkl', 'wb') as f:
+    #     pickle.dump(to_save, f)
+    # raise Exception("Exiting after saving invSigma for debugging")
+
+    # modify sigma such that it scales with number of time points in a trial
 
     # Calculate the log-determinant of prior covariance,
     #   the log-prior, 1st, & 2nd derivatives
@@ -498,14 +566,6 @@ def getPosteriorTermsNeural(E_flat, dat, hyper, weights, method=None):
     y = dat['y']
     gw = np.sum(g * W.T, axis=1) # T x 1 (namely N samples by 1) vector of w_t' * x_t
     y_res = y - gw
-
-    # Preliminary calculations for 1st and 2nd derivatives
-    # is it affine with respect to E?
-    # Old code (commented for reference):
-    # dlliList = np.zeros((w_N, K))
-    # for i in range(w_N):
-    #     dlliList[i, :] = np.sum(y_res[dat['tr_start'][i]:dat['tr_start'][i+1]][:,None] * g[dat['tr_start'][i]:dat['tr_start'][i+1], :],axis=0)
-    # dlliList = dlliList / (hyper['sigmay']**2)
     
     # Optimized version: pre-compute product once, then accumulate per trial
     y_g_product = y_res[:, None] * g  # Shape: (N, K)
@@ -520,13 +580,13 @@ def getPosteriorTermsNeural(E_flat, dat, hyper, weights, method=None):
     # not sure yet if should be put outside this function or anywhere else
     # for speed purpose
     # xtx = g[:, :, None] @ g[:, None, :]
-    if 'xtx' not in dat:
-        dat['xtx'] = xtx_neural(g, dat['tr_start'])
-    HlliList = - dat['xtx'] / (hyper['sigmay'] ** 2)
-    # for HlliList[t], t = 0, ..., w_N-1, it should be dw^2 for sample t
-    # so for X (K x t_n) of trial n, HlliList[t] = - X X^T / (hyper['sigmay'] ** 2)
-    # !!! we could even go a step further and calculate ddlogli mostly outside loop 
-
+    if if_compute_Hll:
+        if 'xtx' not in dat:
+            dat['xtx'] = xtx_neural(g, dat['tr_start'])
+        HlliList = - dat['xtx'] / (hyper['sigmay'] ** 2)
+        ddlogli = {'H': myblk_diags(HlliList), 'K': K}
+    else:
+        ddlogli = {'H': None, 'K': K}
 
     # Calculate the log-likelihood and 1st & 2nd derivatives
     logli = (
@@ -534,13 +594,13 @@ def getPosteriorTermsNeural(E_flat, dat, hyper, weights, method=None):
         - 0.5 * np.sum(y_res ** 2) / (hyper['sigmay'] ** 2)
     )
     dlogli = DTinv_v(dlliList.flatten('F'), K)
-    ddlogli = {'H': myblk_diags(HlliList), 'K': K}
+    
 
     liTerms = {'logli': logli, 'dlogli': dlogli, 'ddlogli': ddlogli}
 
     return priorTerms, liTerms, W_tr
 
-def getPosteriorTermsGauss(E_flat, dat, hyper, weights, method=None):
+def getPosteriorTermsGauss(E_flat, dat, hyper, weights, method=None, if_compute_Hll=True):
     '''Given a sequence of parameters formatted as an N*K matrix, calculates
     random-walk log priors & likelihoods and their derivatives
 
@@ -647,7 +707,11 @@ def getPosteriorTermsGauss(E_flat, dat, hyper, weights, method=None):
     # this is only dependent on hyperparameters
     # not sure yet if should be put outside this function or anywhere else
     # for speed purpose
-    HlliList = - (g[:, :, None] @ g[:, None, :]) / (hyper['sigmay'] ** 2)
+    if if_compute_Hll:
+        HlliList = - (g[:, :, None] @ g[:, None, :]) / (hyper['sigmay'] ** 2)
+        ddlogli = {'H': myblk_diags(HlliList), 'K': K}
+    else:
+        ddlogli = {'H': None, 'K': K}
 
     # INSERT CODE HERE TO HANDLE _days OR _constant METHODS
 
@@ -658,7 +722,6 @@ def getPosteriorTermsGauss(E_flat, dat, hyper, weights, method=None):
         - 0.5 * np.sum((y - gw) ** 2) / (hyper['sigmay'] ** 2)
     )
     dlogli = DTinv_v(dlliList.flatten('F'), K)
-    ddlogli = {'H': myblk_diags(HlliList), 'K': K}
 
     liTerms = {'logli': logli, 'dlogli': dlogli, 'ddlogli': ddlogli}
 

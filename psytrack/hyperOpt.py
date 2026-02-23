@@ -21,7 +21,6 @@ from psytrack.helper.helperFunctions import (
     read_input,
 )
 
-
 def hyperOpt(dat, hyper, weights, optList, method=None, showOpt=0, jump=2,
              hess_calc="weights",gaussian=False,E0=None):
     '''Optimizes for hyperparameters and weights.
@@ -74,6 +73,14 @@ def hyperOpt(dat, hyper, weights, optList, method=None, showOpt=0, jump=2,
 
     # pre-compute input design matrix
     dat['g'] = read_input(dat, weights)
+
+    # pre-compute days info here
+    if 'dayLength' not in dat:
+        dat['dayLength'] = np.array([], dtype=int)
+    if 'missing_trials' not in dat:
+        dat['missing_trials'] = None
+    if 'days' not in dat:
+        dat['days'] = np.cumsum(dat['dayLength'], dtype=int)[:-1]
 
     current_hyper = hyper.copy()
     best_logEvd = None
@@ -215,6 +222,7 @@ def hyperOpt(dat, hyper, weights, optList, method=None, showOpt=0, jump=2,
             'showOpt': showOpt,
             'jump': jump,
             'traceback': traceback.format_exc(),
+            'llstruct': llstruct,
             }
 
             # fname = f"/tmp/hyperOpt_error_{int(time.time())}_{os.getpid()}.pkl"
@@ -265,6 +273,8 @@ def hyperOpt(dat, hyper, weights, optList, method=None, showOpt=0, jump=2,
 
     return best_hyper, best_logEvd, best_wMode, hess_info
 
+def hyperOpt_loss_jac():
+    pass
 
 def hyperOpt_lossfun(optVals, keywords):
     '''Loss function used by decoupled Laplace to optimize for evidence over
@@ -296,7 +306,8 @@ def hyperOpt_lossfun(optVals, keywords):
             count += 1
         else:
             # hyper.update({val: 2**optVals[count:count + K]})
-            hyper.update({val: 2**optVals[count:count + len(hyper[val])]}) 
+            hyper.update({val: 2**optVals[count:count + len(hyper[val])]})
+            print(type(optVals)) 
             count += len(hyper[val])
 
     # Determine type of analysis (standard, constant, or day weights)
