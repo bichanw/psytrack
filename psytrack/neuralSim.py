@@ -173,6 +173,7 @@ def generateNeuralSim(K=2,
 
     # Add noise
     y += np.random.randn(tr_start[-1]) * hyper['sigmay']
+    tr_weights['sigmay'] = hyper['sigmay'] # save hyper parameter noise level
 
     # generate data dictionary for psytrack
     dat = {
@@ -182,6 +183,7 @@ def generateNeuralSim(K=2,
         'dayLength': np.array([], dtype=int),
     }
     weights = {'x': K + 1}
+    # hyper_guess = {'sigma': hyper['sigma'], 'sigmay': hyper['sigmay']}
     hyper_guess = {'sigma': [2**-1] * (K + 1), 'sigmay': hyper['sigmay']}
     optList = ['sigma','sigmay']
 
@@ -219,6 +221,11 @@ def generateNeuralSim(K=2,
         evd = None
         wMode = None
         hess_info = None
+
+        # attach other inference variables to tr_weights
+        tr_weights['hyp'] = hyper
+        tr_weights['optList'] = optList
+        tr_weights['weights'] = weights
 
     return dat, tr_weights, hyp, evd, wMode, hess_info
 

@@ -1,9 +1,103 @@
 import numpy as np
 from .helperFunctions import read_input
 from ..hyperOpt import hyperOpt
+from ..getMAP import getMAP
+
+
+
+def index_data(D, ind, model_type = 'standard'):
+    ''' 
+    index the data dict by the indices
+    '''
+
+    # initialize new data dictionary
+    newD = {}
+
+    # remove possible intermediate variables produced during optimization
+    if 'g' in D:
+        del D['g']
+    if 'xtx' in D:
+        del D['xtx']
+
+    if model_type == 'neural' or 'tr_start' in D:
+        N = D['tr_start'].shape[0] - 1
+
+        # indices of time points for the trials in ind
+        ind = np.sort(ind)
+        ind_t = np.concatenate([
+            np.arange(D['tr_start'][i], D['tr_start'][i + 1], dtype=int)
+            for i in ind
+        ])
+        ind_t = ind_t.astype(int)
+
+        # iterate through all keys in the data dict and index the data
+        for key in D.keys():
+
+            # Inputs is handled separately below because we always want to slice
+            # it along the trial dimension.
+            if key == 'inputs' or key == 'tr_start' or key == 'y':
+                newD[key] = {}
+                continue
+
+            try:
+                if N == D[key].shape[0]:
+                    # Common case: trial-aligned arrays are sliced by the fold
+                    # train/test indices.
+                    newD[key] = D[key][ind]
+                else:
+                    # Non-trial-aligned arrays (or scalars) are copied as-is.
+                    newD[key] = D[key].copy()
+            except:
+                # If the value doesn't support `.shape`/slicing, keep it
+                # unchanged for both train and test dicts.
+                newD[key] = D[key]
+
+
+        # `inputs` is assumed to be time-aligned with the same first dimension
+        for i in D['inputs'].keys():
+            newD['inputs'][i] = D['inputs'][i][ind_t]
+        newD['y'] = D['y'][ind_t]
+
+        # recalculate tr_start
+        tr_len = np.diff(D['tr_start'])
+        newD['tr_start'] = np.insert(np.cumsum(tr_len[ind]), 0, 0)
+
+    else:
+
+        N = D['y'].shape[0]
+
+        # iterate through all keys in the data dict and index the data
+        for key in D.keys():
+
+            # Inputs is handled separately below because we always want to slice
+            # it along the trial dimension.
+            if key == 'inputs':
+                newD[key] = {}
+                continue
+
+            try:
+                if N == D[key].shape[0]:
+                    # Common case: trial-aligned arrays are sliced by the fold
+                    # train/test indices.
+                    newD[key] = D[key][ind]
+                else:
+                    # Non-trial-aligned arrays (or scalars) are copied as-is.
+                    newD[key] = D[key].copy()
+            except:
+                # If the value doesn't support `.shape`/slicing, keep it
+                # unchanged for both train and test dicts.
+                newD[key] = D[key]
+        
+        # `inputs` is assumed to be trial-aligned with the same first dimension
+        # as `D['y']`, so we always slice it by `train` and `test`.
+        for i in D['inputs'].keys():
+            newD['inputs'][i] = D['inputs'][i][ind]
+
+    
+    return newD
 
 def crossValidate(D, hyper_guess, weight_dict, optList,
-                  F=10, seed=None, verbose=True):
+                  F=10, seed=None, verbose=True, fix_hyper=False):
     """Calculates the xval loglikelihood and P(y=0) for each trial.
     
     Args:
@@ -17,30 +111,98 @@ def crossValidate(D, hyper_guess, weight_dict, optList,
     
     Returns:
         xval_logli: float, the cross-validated loglikelihood of the model
-        xval_pL: array, the x-val P(y=0) for each trial
+        xval_pL: array, the x-val P(y=0) for each trial. For Gaussian or neural, the estimate average response
     """
 
+    # Split the dataset into F train/test folds.
+    # `split_data()` returns lists of length F, where each element is the
+    # (trainD, testD) dict for one held-out fold.
     train_dats, test_dats = split_data(D, F=F, seed=seed)
 
+    # determine model type
+    if 'tr_start' in D:
+        model_type = 'neural'
+    elif np.unique(D['y']).shape[0]>2:
+        model_type = 'gaussian'
+    else:
+        model_type = 'standard'
+
+    # Total (summed) cross-validated log-likelihood across all held-out trials.
     xval_logli = 0
+    logli_per_fold = np.zeros(F)
+    # Collect per-fold per-trial "weight mode" outputs so we can later
+    # reorder them back to the original trial ordering.
     all_gw = []
+    w_cv = []
     for f in range(F):
         if verbose:
             print("\rRunning xval fold " + str(f+1) + " of " + str(F), end="")
-        _, _, wMode, _ = hyperOpt(train_dats[f], hyper_guess, weight_dict,
+
+        # Inner step: fit hyperparameters (and weights) using only the current
+        # training fold.
+        #
+        # `hyperOpt()` returns several quantities; for CV we only need the
+        # mode of the fitted weights (`wMode`) to compute held-out likelihood.
+        if fix_hyper:
+            wMode, _, _, _ = getMAP(train_dats[f], hyper_guess, weight_dict, method=None, E0=None, showOpt=0)
+        else:
+            _, _, wMode, _ = hyperOpt(train_dats[f], hyper_guess, weight_dict,
                                   optList, hess_calc=None)
-        logli, gw = xval_loglike(test_dats[f], wMode,
+
+        # Outer evaluation: compute held-out log-likelihood and predicted
+        # weight-mode contribution (`gw`) for the missing trials in `test_dats[f]`.
+        logli, gw, test_W = xval_loglike(test_dats[f], wMode,
                                  train_dats[f]['missing_trials'], weight_dict)
+
+        # `logli` is per-held-out trial; sum to accumulate the global CV score.
         xval_logli += np.sum(logli)
-        all_gw += [gw]
+        logli_per_fold[f] = np.sum(logli)
+
+        # `gw` is per-held-out trial for this fold; store it for later
+        # concatenation/reordering.
+        # check if gw is a list
+        if isinstance(gw, list):
+            all_gw.extend(gw)
+        else:
+            all_gw += [gw]
         
-    xval_gw = np.array(all_gw).flatten()
+        # store test_W
+        w_cv.append(test_W)
+    w_cv = np.concatenate(w_cv, axis=1)
     test_inds = np.array([i['test_inds'] for i in test_dats]).flatten()
     inds = np.argsort(test_inds)
-    xval_gw = xval_gw[inds]
-    xval_pL = 1 / (1 + np.exp(xval_gw))
+    if model_type == 'standard':
+        # Flatten collected held-out predictions into a single array, then reorder
+        # them to match the original trial index order in `D['y']`.
+        xval_gw = np.array(all_gw).flatten()
+        
+        xval_gw = xval_gw[inds]
+        w_cv = w_cv[:,inds]
+
+        # For the standard (Bernoulli/logistic) model, the probability of
+        # `y=0` is `1 / (1 + exp(gw))`.
+        xval_pL = 1 / (1 + np.exp(xval_gw))
+    elif model_type == 'neural':
+        # return xval_logli, test_dats, all_gw
+        test_inds = np.concatenate([test_dats[f]['test_inds'] for f in range(F)])
+        # xval_pL = np.array([])
+        # for i in range(len(all_gw)):
+        #     xval_pL = np.concatenate([xval_pL, all_gw[np.where(test_inds==i)[0][0]]])
+        all_gw = [all_gw[i] for i in inds]
+        xval_pL = np.concatenate(all_gw, axis=0)
+        w_cv = w_cv[:,inds]
+    elif model_type == 'gaussian':
+        raise Exception('wip')
     
-    return xval_logli, xval_pL
+    # save some cross validation info
+    cv_info = {
+        'test_inds': np.array([i['test_inds'] for i in test_dats]),
+        'w_cv': w_cv,
+        'logli_per_fold': logli_per_fold,
+    }
+    
+    
+    return xval_logli, xval_pL, cv_info
     
 
 def split_data(D, F=10, seed=None):
@@ -59,15 +221,38 @@ def split_data(D, F=10, seed=None):
         K_trainD : list, contains each fold's training dataset
         K_testD : list, contains each fold's testing dataset
     '''
+    
+    # # save required variables (D, F, seed)
+    # import pickle
+    # to_save = {'D': D, 'F': F, 'seed': seed}
+    # with open('/usr/people/bichanw/SpikeSorting/Codes/psytrack/data/split_data.pkl', 'wb') as f:
+    #     pickle.dump(to_save, f)
+    # raise Exception('Stop here')
 
-    ### Initialize randomness
+    # We want a reproducible fold split given `seed`.
     np.random.seed(seed)
 
-    # Determine number of trials, and shuffle the order
-    N = D['y'].shape[0]
+    # Determine model type
+    if 'tr_start' in D:
+        model_type = 'neural'
+    else:
+        model_type = 'standard'    
+    # elif 'sigmay' in D['hyper']:
+    #     model_type = 'gaussian'
+    # else:
+
+    # The CV logic in this function treats each row of `D['y']` as a
+    # single "trial unit" (so trial indices are 0..N-1).
+    if model_type == 'neural' or 'tr_start' in D:
+        N = D['tr_start'].shape[0] - 1
+    else:
+        N = D['y'].shape[0]
+
     shuffled_array = np.arange(N)
     np.random.shuffle(shuffled_array)
     
+    # For this implementation, we require equal fold sizes so that
+    # `chunk = N / F` is an integer.
     if N % F:
         raise Exception(
             "The number of trials in the data set N, " + str(N) + ",must be "
@@ -75,32 +260,49 @@ def split_data(D, F=10, seed=None):
             "trim() function to shave the last few trials off of the dataset."
             )
 
-    ### Iterate through the folds
+    # Accumulate per-fold train/test dicts.
     K_trainD = []
     K_testD = []
     for k in range(F):
 
-        ### Define the k^th train/test split
+        # Define the k-th train/test split by slicing `shuffled_array`
+        # into contiguous chunks (in the shuffled trial ordering).
         N_array = np.arange(N)
         chunk = int(N / F)
 
-        ### Select the k^th chunk of shuffled trial indices
+        # `test` are trial indices (in the original dataset) held out for
+        # this fold. We sort them so that downstream logic sees trials in
+        # increasing original time order.
         test = np.sort(shuffled_array[k * chunk : (k + 1) * chunk])
         train = np.delete(N_array, test)
 
-        ### Collect counts of where gaps will be in training set from missing test trials
+        # `missing_trials` encodes, for each training trial in `train`,
+        # how many consecutive held-out test trials occur immediately after it
+        # in the original time ordering.
+        #
+        # This is needed by `xval_loglike()`, which "replays" predictions over
+        # the test trials and uses the preceding training weights. The details
+        # are implemented via the `train_array` construction below.
         train_array = np.zeros(N)
         test2 = test.copy()
         while len(test2) > 0:
             train_array[test2] += 1
             test2 = np.array([i for i in test2 if i - 1 in test2])
+
+        # `train_array` is currently indexed in a test-centric way; slice it
+        # down to the training indices so `missing_trials` aligns with `train`.
         if 0 not in train:
             train_array = train_array[train - 1]
         else:
+            # Special-case: if trial 0 is in `train`, there is no "previous trial"
+            # to anchor the missing count, so we pad with 0 and shift accordingly.
             train_array = np.hstack(([0], train_array[train[1:] - 1]))
 
-        ### Shift any overnight gaps in test set back into training set
-        if 'dayLength' in D:
+        # If `dayLength` exists, it indicates where "day boundaries" occur.
+        # The CV split can accidentally separate trials across days in a way that
+        # breaks continuity assumptions in the model; the block below shifts
+        # any day-boundary overlap in the test set back into training.
+        if 'dayLength' in D and D['dayLength'].shape[0] > 0:
             day_array = np.zeros(N)
             cumDays = np.cumsum(D['dayLength'], dtype=int)[:-1]
             day_array[cumDays] = 1
@@ -112,37 +314,18 @@ def split_data(D, F=10, seed=None):
             days = np.hstack((np.where(day_array)[0], [len(day_array)]))
             new_dayLength = np.hstack((days[0], np.diff(days)))
         else:
+            # If there's no day structure, downstream code expects an empty array.
             new_dayLength = np.array([])
 
-        ### Iterate through all keys in the original dict, save test/train copies
-        trainD = {}
-        testD = {}
-        for key in D.keys():
+        trainD = index_data(D, train, model_type)
+        testD  = index_data(D, test, model_type)
 
-            if key == 'inputs':
-                trainD[key] = {}
-                testD[key] = {}
-                continue
-
-            try:
-                if N == D[key].shape[0]:
-                    trainD[key] = D[key][train]
-                    testD[key] = D[key][test]
-                else:
-                    trainD[key] = D[key].copy()
-                    testD[key] = D[key].copy()
-            except:
-                trainD[key] = D[key]
-                testD[key] = D[key]
-
-        for i in D['inputs'].keys():
-            trainD['inputs'][i] = D['inputs'][i][train]
-            testD['inputs'][i] = D['inputs'][i][test]
-
+        # Store the computed per-training-trial gap counts needed by
+        # `xval_loglike()`, plus the explicit test indices for later reordering.
         trainD.update({'missing_trials': train_array, 'dayLength': new_dayLength})
         testD.update({'test_inds': test})
 
-        ### Append train/test dicts to list of dicts from all folds
+        # Append this fold's train/test dicts.
         K_trainD += [trainD]
         K_testD += [testD]
 
@@ -173,38 +356,82 @@ def xval_loglike(testD, wMode, missing_trials, weights):
     g = read_input(testD, weights)
     _, trainN = wMode.shape
 
-    logli = []
-    all_gw = []
-    test_count = 0  # trial in the test set
-    for t in range(trainN):  # iterate through each training trial
-        
-        # if training trial followed by one or more test trials
-        for _ in range(int(missing_trials[t])):  
+    if 'tr_start' in testD:
+        model_type = 'neural'
+    elif 'hyper' in testD and 'sigmay' in testD['hyper']:
+        model_type = 'gaussian'
+    else:
+        model_type = 'standard'
+    
+    if model_type == 'standard':
+        logli = []
+        all_gw = []
+        test_W = []
+        test_count = 0  # trial in the test set
+        for t in range(trainN):  # iterate through each training trial
+            
+            # if training trial followed by one or more test trials
+            for _ in range(int(missing_trials[t])):  
 
-            ### Currently use the weights form the nearest prior training
-            ### trial, could do interpolation...
-            gw = g[test_count] @ wMode[:, t]
+                ### Currently use the weights form the nearest prior training
+                ### trial, could do interpolation...
+                gw = g[test_count] @ wMode[:, t]
+                yt = int(testD['y'][test_count]) - 1
+
+                ### Save loglikelihood and gw value of each term in test set
+                logli += [yt * gw - np.logaddexp(0, gw)]
+                all_gw += [gw]
+                test_W += [wMode[:, t]]
+
+                ### Increment tracker of test trial index
+                test_count += 1
+
+        # Account for test trials at end
+        for _ in range(len(g) - np.sum(missing_trials, dtype=int)):
+                
+            ### Use last training weights
+            gw = g[test_count] @ wMode[:, -1]
             yt = int(testD['y'][test_count]) - 1
 
             ### Save loglikelihood and gw value of each term in test set
             logli += [yt * gw - np.logaddexp(0, gw)]
             all_gw += [gw]
+            test_W += [wMode[:, -1]]
 
             ### Increment tracker of test trial index
             test_count += 1
+        logli = np.array(logli)
+        all_gw = np.array(all_gw)
+        test_W = np.array(test_W)
+    elif model_type == 'neural':
+        
+        # interpolate weights to test set
+        test_W = np.zeros((wMode.shape[0], testD['test_inds'].shape[0]))
+        for i in range(wMode.shape[0]):
+            test_W[i,:] = np.interp(testD['test_inds'], 
+                np.setdiff1d(np.arange(testD['test_inds'].shape[0]+missing_trials.shape[0]), testD['test_inds']), 
+                wMode[i])
+        
+        # build full weight matrix by repeating the weights for each trial
+        test_Wfull = np.zeros((g.shape[1], g.shape[0]))
+        for i in range(testD['tr_start'].shape[0]-1):
+            test_Wfull[:, testD['tr_start'][i]:testD['tr_start'][i+1]] = test_W[:, i][:,None]
 
-    # Account for test trials at end
-    for _ in range(len(g) - np.sum(missing_trials, dtype=int)):
-            
-        ### Use last training weights
-        gw = g[test_count] @ wMode[:, -1]
-        yt = int(testD['y'][test_count]) - 1
+        # predict response
+        y_pred = (g * test_Wfull.T).sum(axis=1)
+        err = (testD['y'] - y_pred)**2
 
-        ### Save loglikelihood and gw value of each term in test set
-        logli += [yt * gw - np.logaddexp(0, gw)]
-        all_gw += [gw]
+        # sum each trial up
+        # !!! use mean squared error for now. Not comparable across dataset?
+        logli = np.zeros(testD['tr_start'].shape[0]-1)
+        for i in range(testD['tr_start'].shape[0]-1):
+            logli[i] = err[testD['tr_start'][i]:testD['tr_start'][i+1]].sum()
 
-        ### Increment tracker of test trial index
-        test_count += 1 
+        # calculate predicted response
+        all_gw = []
+        # cut into trials
+        for i in range(testD['tr_start'].shape[0]-1):
+            all_gw += [y_pred[testD['tr_start'][i]:testD['tr_start'][i+1]]]
 
-    return np.array(logli), np.array(all_gw)
+
+    return logli, all_gw, test_W

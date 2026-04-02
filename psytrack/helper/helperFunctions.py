@@ -2,6 +2,7 @@ from scipy.sparse.linalg import splu
 from scipy.sparse import isspmatrix_csc, diags, csr_matrix
 import numpy as np
 
+
 def commutation_matrix(m, n):
     idx = np.arange(m * n)
     rows = idx
@@ -315,6 +316,8 @@ def trim(dat, START=0, END=0):
         new_dat (dict): the trimmed dataset
     '''
 
+    from .crossValidation import index_data
+
     if (not START) and (not END):
         return dat
 
@@ -331,24 +334,32 @@ def trim(dat, START=0, END=0):
     if START >= END:
         raise Exception('START >= END : ' + str(START) + ', ' + str(END))
 
-    new_dat = {}
-    for k in dat.keys():
+    # determine model type
+    if 'tr_start' in dat:
+        model_type = 'neural'
+    # elif 'sigmay' in dat['hyper']:
+    #     model_type = 'gaussian'
+    else:
+        model_type = 'standard'
 
-        if k == 'inputs':
-            continue
+    new_dat = index_data(dat, np.arange(START, END), model_type = model_type)
+    # new_dat = {}
+    # for k in dat.keys():
 
-        try:
-            if N == dat[k].shape[0]:
-                new_dat[k] = dat[k][START:END].copy()
-            else:
-                new_dat[k] = dat[k].copy()
-        except:
-            new_dat[k] = dat[k]
+    #     if k == 'inputs':
+    #         continue
 
-    inputs = {}
-    for i in dat['inputs'].keys():
-        inputs[i] = dat['inputs'][i][START:END]
-    new_dat['inputs'] = inputs
+    #     try:
+    #         if N == dat[k].shape[0]:
+    #             new_dat[k] = dat[k][START:END].copy()
+    #         else:
+    #             new_dat[k] = dat[k].copy()
+    #     except:
+    #         new_dat[k] = dat[k]
+    # inputs = {}
+    # for i in dat['inputs'].keys():
+    #     inputs[i] = dat['inputs'][i][START:END]
+    # new_dat['inputs'] = inputs
 
     if 'dayLength' in new_dat and new_dat['dayLength'].size:
         cumdays = np.cumsum(new_dat['dayLength'])

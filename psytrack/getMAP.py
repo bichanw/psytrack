@@ -60,7 +60,7 @@ def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0,gaussian=False):
     # Determine model type
     if 'tr_start' in dat:
         model_type = 'neural'
-    elif gaussian:
+    elif gaussian or np.unique(dat['y']).shape[0]>2:
         model_type = 'gaussian'
     else:
         model_type = 'standard'
@@ -131,7 +131,7 @@ def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0,gaussian=False):
 
     # Account for missing trials from running xval (i.e. gaps from test set)
     if 'missing_trials' in dat and dat['missing_trials'] is not None:
-        if len(dat['missing_trials']) != N:
+        if len(dat['missing_trials']) != w_N:
             raise Exception('missing_trials must be length N if used')
     else:
         dat['missing_trials'] = None
@@ -166,7 +166,7 @@ def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0,gaussian=False):
         # if True:
         # if False:
         if model_type == 'neural' or model_type == 'gaussian':
-            print('using analytic solution to get MAP estimate',flush=True)
+            # print('using analytic solution to get MAP estimate',flush=True)
             # analytic solution
             priorTerms, liTerms, _ = _get_posterior_terms_dispatch(eInit, dat, hyper, weights, method=method, model_type=model_type)
             J_W = DTv(liTerms['dlogli'], K)
@@ -519,20 +519,6 @@ def getPosteriorTermsNeural(E_flat, dat, hyper, weights, method=None, if_compute
     # invSigma.data[0] *= scale
     
 
-    # pickle save invSigma
-    # import pickle
-    # to_save = {
-    #     'invSigma': invSigma,
-    #     'hyper': hyper,
-    #     'dat': dat,
-    #     'weights': weights,
-    #     'method': method,
-    # }
-    # with open('getPosteriorTermsNeural.pkl', 'wb') as f:
-    #     pickle.dump(to_save, f)
-    # raise Exception("Exiting after saving invSigma for debugging")
-
-    # modify sigma such that it scales with number of time points in a trial
 
     # Calculate the log-determinant of prior covariance,
     #   the log-prior, 1st, & 2nd derivatives
