@@ -4,6 +4,17 @@ from ..hyperOpt import hyperOpt
 from ..getMAP import getMAP
 
 
+def produce_grid(mid=-1, step=2, num=5):
+    # produce grid of sigma values
+    # adding more functionality later
+
+    # intermediate values
+    start = mid - step * (num - 1) / 2
+    end = mid + step * (num - 1) / 2
+
+    # generate grid
+    grid = np.logspace(base=2,start=start, stop=end, num=num)
+    return grid
 
 def index_data(D, ind, model_type = 'standard'):
     ''' 

@@ -16,6 +16,24 @@ ZORDER = {'bias' : 2,
           'cR' : 3, 'cL' : 3,
           'c' : 1, 'h' : 1, 's_avg' : 1}
 
+def plot_weight_error(w, wstd, ax, **fill_between_kwargs):
+    '''Plots error bars around weights.
+    
+    Args:
+        w: weights to plot.
+        wstd: standard errors of weights.
+        ax: matplotlib axes to plot on.
+        fill_between_kwargs: kwargs for fill_between.
+    '''
+    handles = []
+    fill_kwargs = dict(fill_between_kwargs)
+    fill_kwargs.setdefault("alpha", 0.2)
+    fill_kwargs.setdefault("zorder", -1)
+    for i in range(wstd.shape[0]):
+        h = ax.fill_between(np.arange(wstd.shape[1]),
+                        w[i]-1.96*wstd[i], w[i]+1.96*wstd[i], **fill_kwargs)
+        handles.append(h)
+    return handles
 
 def plot_weights(W, weight_dict=None, figsize=(5, 2), ax=None,
                  colors=None, zorder=None, errorbar=None, days=None):
