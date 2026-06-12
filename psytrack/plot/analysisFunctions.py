@@ -68,7 +68,8 @@ def plot_weights(W, weight_dict=None, figsize=(5, 2), ax=None,
             labels += [j]*weight_dict[j]
     else:
         labels = [i for i in range(K)]
-        colors = {i: np.unique(list(COLORS.values()))[i] for i in range(K)}
+        unique_colors = np.unique(list(COLORS.values()))
+        colors = {i: unique_colors[i % len(unique_colors)] for i in range(K)}
         zorder = {i: i+1 for i in range(K)}
 
     # Plot weights and credible intervals

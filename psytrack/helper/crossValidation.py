@@ -4,6 +4,63 @@ from ..hyperOpt import hyperOpt
 from ..getMAP import getMAP
 
 
+def plt_grid_results(sigma_grid, log_li_array, search_indices):
+    '''
+    Plot the grid results of the cross-validation
+
+    Args:
+        sigma_grid: dictionary of sigma grids for each index
+        log_li_array: array of log-likelihood values
+        search_indices: list of indices of the sigma grids to search
+
+    Returns:
+        fig: figure handle
+        ax: axis handles
+    '''
+    import matplotlib.pyplot as plt
+
+    N_sigma_tested = np.array([x.shape[0] for x in sigma_grid.values()])
+    cv_results_arr = log_li_array.reshape(N_sigma_tested[0],N_sigma_tested[1],N_sigma_tested[2],N_sigma_tested[3])
+
+    # find best hyper-parameters
+    [_, best_ind] = np.max(cv_results_arr), np.unravel_index(np.argmax(cv_results_arr), cv_results_arr.shape)
+    print(f'best index: {best_ind}', flush=True)
+    best_sigma_txt = (
+        f"best σ (log2): "
+        f"{np.log2(sigma_grid[search_indices[0]][best_ind[0]]).astype(int)}, "
+        f"{np.log2(sigma_grid[search_indices[1]][best_ind[1]]).astype(int)}, "
+        f"{np.log2(sigma_grid[search_indices[2]][best_ind[2]]).astype(int)}, "
+        f"{np.log2(sigma_grid[search_indices[3]][best_ind[3]]).astype(int)}"
+    )
+    print(best_sigma_txt, flush=True)
+    
+
+
+    # plot results
+    fig, ax = plt.subplots(N_sigma_tested[0],N_sigma_tested[1], layout='tight')
+    for i in range(N_sigma_tested[0]):
+        for j in range(N_sigma_tested[1]):
+            ax[i,j].imshow(cv_results_arr[i,j])
+    ax[best_ind[0],best_ind[1]].plot(best_ind[3],best_ind[2],'r*')
+
+    # set clim and remove ticks
+    clim = ax[best_ind[0],best_ind[1]].get_images()[0].get_clim()
+    [ax_.get_images()[0].set_clim(clim) for ax_ in ax.flatten()];
+    [ax_.set(xticks=[],yticks=[]) for ax_ in ax.flatten()];
+
+    # label each axis of sigma grid tested
+    ax[-1,-1].set(xticks=range(0,N_sigma_tested[3],2), xticklabels=np.log2(sigma_grid[search_indices[3]][::2]).astype('int') ,xlabel=r"$log_2(\sigma_4)$",
+                yticks=range(N_sigma_tested[2]), yticklabels=np.log2(sigma_grid[search_indices[2]]).astype('int') ,ylabel=r"$log_2(\sigma_3)$");
+    ax[0,0].set(title=rf'$\log_{2}\sigma_2={int(np.log2(sigma_grid[search_indices[1]][0]))}$');
+    [ax[0,i].set(title=rf'${int(np.log2(sigma_grid[search_indices[1]][i]))}$') for i in range(1,N_sigma_tested[1])];
+
+    ax[0,0].set(ylabel=rf'$\log_{2}\sigma_1={int(np.log2(sigma_grid[search_indices[0]][0]))}$');
+    [ax[i,0].set(ylabel=rf'${int(np.log2(sigma_grid[search_indices[0]][i]))}$') for i in range(1,N_sigma_tested[0])];
+
+    fig.suptitle(best_sigma_txt, fontsize=10, y=.98)  # y>1 lifts it above the subplot area
+
+    return fig, ax
+
 def produce_grid(mid=-1, step=2, num=5):
     # produce grid of sigma values
     # adding more functionality later
@@ -107,7 +164,8 @@ def index_data(D, ind, model_type = 'standard'):
     
     return newD
 
-def crossValidate(D, hyper_guess, weight_dict, optList,
+
+def crossValidate_old(D, hyper_guess, weight_dict, optList,
                   F=10, seed=None, verbose=True, fix_hyper=False):
     """Calculates the xval loglikelihood and P(y=0) for each trial.
     
@@ -214,6 +272,169 @@ def crossValidate(D, hyper_guess, weight_dict, optList,
     
     
     return xval_logli, xval_pL, cv_info
+    
+
+    
+def crossValidate(D, hyper_guess, weight_dict, optList,
+                  F=10, seed=None, verbose=True, fix_hyper=False):
+    """Calculates the xval loglikelihood and P(y=0) for each trial.
+    
+    Args:
+        D: standard dataset
+        weight_dict: name and count of which weights in D['inputs'] to fit. 
+        hyper_guess: hyperparameters guess for hyperOpt(). Can be either:
+            - dict: a single initialization (backward compatible)
+            - list/tuple of dicts: multiple initializations; for each CV fold we
+              fit from each guess on the *training* fold and select the one
+              with the best training evidence (logEvd), then evaluate on the
+              held-out fold.
+        optList: hyperparameters in 'hyper' to be optimized
+        F: Number of cross-validation folds
+        seed: to replicate randomness of xval fold division.
+        verbose: prints a progress message at end of each fold.
+        fix_hyper: if True, skip hyperparameter optimization and only fit MAP
+            weights for the provided hyperparameters. If multiple guesses are
+            provided, selects the one with best training evidence per fold.
+    
+    Returns:
+        xval_logli: float, the cross-validated loglikelihood of the model
+        xval_pL: array, the x-val P(y=0) for each trial. For Gaussian or neural, the estimate average response
+    """
+
+    # Allow multi-start hyperparameter initialization. Backward compatible
+    # behavior for a single dict.
+    if isinstance(hyper_guess, (list, tuple)):
+        hyper_guesses = list(hyper_guess)
+    else:
+        hyper_guesses = [hyper_guess]
+    if len(hyper_guesses) == 0:
+        raise ValueError("hyper_guess must be a dict or a non-empty list/tuple of dicts")
+
+    # Split the dataset into F train/test folds.
+    # `split_data()` returns lists of length F, where each element is the
+    # (trainD, testD) dict for one held-out fold.
+    train_dats, test_dats = split_data(D, F=F, seed=seed)
+
+    # determine model type
+    if 'tr_start' in D:
+        model_type = 'neural'
+    elif np.unique(D['y']).shape[0]>2:
+        model_type = 'gaussian'
+    else:
+        model_type = 'standard'
+
+    # Total (summed) cross-validated log-likelihood across all held-out trials.
+    xval_logli = 0
+    logli_per_fold = np.zeros(F)
+    # Track held-out log-likelihood per fold *and* per hyperparameter guess.
+    # Shape: (F, G) where G = len(hyper_guesses). Values are summed over the
+    # held-out trials of that fold (consistent with `logli_per_fold`).
+    logli_per_fold_per_guess = np.full((F, len(hyper_guesses)), np.nan, dtype=float)
+    # Collect per-fold per-trial "weight mode" outputs so we can later
+    # reorder them back to the original trial ordering.
+    all_gw = []
+    w_cv = []
+    chosen_guess_idx = np.zeros(F, dtype=int)
+    chosen_hyper_per_fold = []
+    for f in range(F):
+        if verbose:
+            print("\rRunning xval fold " + str(f+1) + " of " + str(F), end="")
+
+        # Inner step: fit hyperparameters (and weights) using only the current
+        # training fold.
+        #
+        # `hyperOpt()` returns several quantities; for CV we only need the
+        # mode of the fitted weights (`wMode`) to compute held-out likelihood.
+        best_logEvd = None
+        best_wMode = None
+        best_hyper = None
+        best_guess_idx = 0
+        for g_idx, hg in enumerate(hyper_guesses):
+            if fix_hyper:
+                wMode_tmp, _, logEvd_tmp, _ = getMAP(
+                    train_dats[f], hg, weight_dict, method=None, E0=None, showOpt=0
+                )
+                best_hyper_tmp = hg
+            else:
+                best_hyper_tmp, logEvd_tmp, wMode_tmp, _ = hyperOpt(
+                    train_dats[f], hg, weight_dict, optList, hess_calc=None
+                )
+
+            # Save held-out log-likelihood for this guess on this fold.
+            # Note: uses the fold's test set with weights fit on the training fold.
+            logli_tmp, _, _ = xval_loglike(
+                test_dats[f], wMode_tmp, train_dats[f]['missing_trials'], weight_dict
+            )
+            logli_per_fold_per_guess[f, g_idx] = float(np.sum(logli_tmp))
+            print(f"fold {f} guess {g_idx} ", flush=True)
+
+        #     if (best_logEvd is None) or (logEvd_tmp >= best_logEvd):
+        #         best_logEvd = logEvd_tmp
+        #         best_wMode = wMode_tmp
+        #         best_hyper = best_hyper_tmp
+        #         best_guess_idx = g_idx
+
+        # wMode = best_wMode
+        # chosen_guess_idx[f] = best_guess_idx
+        # chosen_hyper_per_fold.append(best_hyper)
+
+        # Outer evaluation: compute held-out log-likelihood and predicted
+        # weight-mode contribution (`gw`) for the missing trials in `test_dats[f]`.
+        # logli, gw, test_W = xval_loglike(test_dats[f], wMode,
+        #                          train_dats[f]['missing_trials'], weight_dict)
+
+        # # `logli` is per-held-out trial; sum to accumulate the global CV score.
+        # xval_logli += np.sum(logli)
+        # logli_per_fold[f] = np.sum(logli)
+
+        # `gw` is per-held-out trial for this fold; store it for later
+        # concatenation/reordering.
+        # check if gw is a list
+        # if isinstance(gw, list):
+        #     all_gw.extend(gw)
+        # else:
+        #     all_gw += [gw]
+        
+        # store test_W
+        # w_cv.append(test_W)
+    # w_cv = np.concatenate(w_cv, axis=1)
+    test_inds = np.array([i['test_inds'] for i in test_dats]).flatten()
+    inds = np.argsort(test_inds)
+    if model_type == 'standard':
+        # Flatten collected held-out predictions into a single array, then reorder
+        # them to match the original trial index order in `D['y']`.
+        xval_gw = np.array(all_gw).flatten()
+        
+        xval_gw = xval_gw[inds]
+        w_cv = w_cv[:,inds]
+
+        # For the standard (Bernoulli/logistic) model, the probability of
+        # `y=0` is `1 / (1 + exp(gw))`.
+        xval_pL = 1 / (1 + np.exp(xval_gw))
+    elif model_type == 'neural':
+        # return xval_logli, test_dats, all_gw
+        test_inds = np.concatenate([test_dats[f]['test_inds'] for f in range(F)])
+        # xval_pL = np.array([])
+        # for i in range(len(all_gw)):
+        #     xval_pL = np.concatenate([xval_pL, all_gw[np.where(test_inds==i)[0][0]]])
+        # all_gw = [all_gw[i] for i in inds]
+        xval_pL = None # np.concatenate(all_gw, axis=0)
+        # w_cv = w_cv[:,inds]
+    elif model_type == 'gaussian':
+        raise Exception('wip')
+    
+    # save some cross validation info
+    cv_info = {
+        'test_inds': np.array([i['test_inds'] for i in test_dats]),
+        'w_cv': w_cv,
+        'logli_per_fold': logli_per_fold,
+        'logli_per_fold_per_guess': logli_per_fold_per_guess,
+        'chosen_guess_idx': chosen_guess_idx,
+        'chosen_hyper_per_fold': chosen_hyper_per_fold,
+    }
+    
+    
+    return np.sum(logli_per_fold_per_guess, axis=0), xval_pL, cv_info
     
 
 def split_data(D, F=10, seed=None):
@@ -417,6 +638,7 @@ def xval_loglike(testD, wMode, missing_trials, weights):
     elif model_type == 'neural':
         
         # interpolate weights to test set
+        # should take care of trials at the end as well
         test_W = np.zeros((wMode.shape[0], testD['test_inds'].shape[0]))
         for i in range(wMode.shape[0]):
             test_W[i,:] = np.interp(testD['test_inds'], 
@@ -436,7 +658,7 @@ def xval_loglike(testD, wMode, missing_trials, weights):
         # !!! use mean squared error for now. Not comparable across dataset?
         logli = np.zeros(testD['tr_start'].shape[0]-1)
         for i in range(testD['tr_start'].shape[0]-1):
-            logli[i] = err[testD['tr_start'][i]:testD['tr_start'][i+1]].sum()
+            logli[i] = -err[testD['tr_start'][i]:testD['tr_start'][i+1]].sum() # using negative error for consistency
 
         # calculate predicted response
         all_gw = []
