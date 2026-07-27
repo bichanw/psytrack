@@ -183,8 +183,8 @@ def generateNeuralSim(K=2,
         'dayLength': np.array([], dtype=int),
     }
     weights = {'x': K + 1}
-    # hyper_guess = {'sigma': hyper['sigma'], 'sigmay': hyper['sigmay']}
-    hyper_guess = {'sigma': [2**-1] * (K + 1), 'sigmay': hyper['sigmay']}
+    hyper_guess = {'sigma': hyper['sigma'], 'sigmay': hyper['sigmay']}
+    # hyper_guess = {'sigma': [2**-1] * (K + 1), 'sigmay': hyper['sigmay']}
     optList = ['sigma','sigmay']
 
     # delete variables to save memory

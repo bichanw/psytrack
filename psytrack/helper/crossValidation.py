@@ -322,6 +322,8 @@ def crossValidate(D, hyper_guess, weight_dict, optList,
         model_type = 'gaussian'
     else:
         model_type = 'standard'
+    print(f"Model type: {model_type}")
+    del D
 
     # Total (summed) cross-validated log-likelihood across all held-out trials.
     xval_logli = 0
@@ -343,15 +345,9 @@ def crossValidate(D, hyper_guess, weight_dict, optList,
         # Inner step: fit hyperparameters (and weights) using only the current
         # training fold.
         #
-        # `hyperOpt()` returns several quantities; for CV we only need the
-        # mode of the fitted weights (`wMode`) to compute held-out likelihood.
-        best_logEvd = None
-        best_wMode = None
-        best_hyper = None
-        best_guess_idx = 0
         for g_idx, hg in enumerate(hyper_guesses):
             if fix_hyper:
-                wMode_tmp, _, logEvd_tmp, _ = getMAP(
+                wMode_tmp, _, _, _ = getMAP(
                     train_dats[f], hg, weight_dict, method=None, E0=None, showOpt=0
                 )
                 best_hyper_tmp = hg
@@ -366,38 +362,9 @@ def crossValidate(D, hyper_guess, weight_dict, optList,
                 test_dats[f], wMode_tmp, train_dats[f]['missing_trials'], weight_dict
             )
             logli_per_fold_per_guess[f, g_idx] = float(np.sum(logli_tmp))
-            print(f"fold {f} guess {g_idx} ", flush=True)
+            if verbose:
+                print(f"fold {f} guess {g_idx} ", flush=True)
 
-        #     if (best_logEvd is None) or (logEvd_tmp >= best_logEvd):
-        #         best_logEvd = logEvd_tmp
-        #         best_wMode = wMode_tmp
-        #         best_hyper = best_hyper_tmp
-        #         best_guess_idx = g_idx
-
-        # wMode = best_wMode
-        # chosen_guess_idx[f] = best_guess_idx
-        # chosen_hyper_per_fold.append(best_hyper)
-
-        # Outer evaluation: compute held-out log-likelihood and predicted
-        # weight-mode contribution (`gw`) for the missing trials in `test_dats[f]`.
-        # logli, gw, test_W = xval_loglike(test_dats[f], wMode,
-        #                          train_dats[f]['missing_trials'], weight_dict)
-
-        # # `logli` is per-held-out trial; sum to accumulate the global CV score.
-        # xval_logli += np.sum(logli)
-        # logli_per_fold[f] = np.sum(logli)
-
-        # `gw` is per-held-out trial for this fold; store it for later
-        # concatenation/reordering.
-        # check if gw is a list
-        # if isinstance(gw, list):
-        #     all_gw.extend(gw)
-        # else:
-        #     all_gw += [gw]
-        
-        # store test_W
-        # w_cv.append(test_W)
-    # w_cv = np.concatenate(w_cv, axis=1)
     test_inds = np.array([i['test_inds'] for i in test_dats]).flatten()
     inds = np.argsort(test_inds)
     if model_type == 'standard':
