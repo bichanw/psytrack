@@ -111,7 +111,7 @@ def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0,gaussian=False):
         eInit = np.zeros(w_N * K)
 
     # Do sanity checks on hyperparameters
-    if 'sigma' not in hyper and 'sigmas_by_ind' not in hyper:
+    if 'sigma' not in hyper and 'sigmas_by_ind' not in hyper and 'sigma_unique' not in hyper:
         raise Exception('WARNING: sigma not specified in hyper dict')
     if 'alpha' in hyper:
         raise Exception('WARNING: alpha is not supported')
@@ -177,15 +177,6 @@ def getMAP(dat, hyper, weights, method=None, E0=None, showOpt=0,gaussian=False):
             mu_post_W = spsolve(Sigma_post_inv, J_W - H_W @ Dinv_v(eInit, K) )
             mu_post_dW = Dv(mu_post_W, K)
 
-            # depleted, calculate mu_post in dW space
-            # if 'DPXXPD' not in dat:
-            #     priorTerms, liTerms, _ = _get_posterior_terms_dispatch(eInit, dat, hyper, weights, method=method, model_type=model_type, if_compute_Hll=True)
-            #     dat['DPXXP'] = DinvT_X_Dinv(liTerms['ddlogli']['H'].toarray() * (hyper['sigmay']**2), w_N, K)
-            # else:
-            #     priorTerms, liTerms, _ = _get_posterior_terms_dispatch(eInit, dat, hyper, weights, method=method, model_type=model_type, if_compute_Hll=False)
-
-            # # H = dat['DPXXP'] / (hyper['sigmay']**2)
-            # Sigma_post_inv = -dat['DPXXP'] / (hyper['sigmay']**2) - priorTerms['ddlogprior'].toarray()
             result = OptimizeResult()
             result.x = mu_post_dW
             result.success = True

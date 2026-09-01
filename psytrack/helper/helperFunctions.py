@@ -197,7 +197,16 @@ def make_invSigma(hyper, days, missing_trials, N, K):
     # indexing sigma by within day and across day
     else:
         # Note: setting a sigma value at index i, adjusts the change between trials i-1 and i
-        sigma = hyper['sigma']
+
+        if 'sigma_map' in hyper:
+            sigma_unique = hyper['sigma_unique']          # length G
+            sigma_map    = hyper['sigma_map']        # length K
+            if len(sigma_map) != K:
+                raise Exception('sigma_map must have length K')
+            hyper['sigma'] = [sigma_unique[i] for i in sigma_map]
+
+        
+        sigma = hyper['sigma']  
 
         if 'sigInit' in hyper and hyper['sigInit'] is not None:
             sigInit = hyper['sigInit']
@@ -218,7 +227,9 @@ def make_invSigma(hyper, days, missing_trials, N, K):
             for i, idx in enumerate(ind):
                 invSigma_flat[offset + idx] = sigmas_by_ind[i + k * len(ind)]**2
             offset += N
-        return diags(invSigma_flat**-1)
+        return diags(invSigma_flat**-1)    
+
+
     
     elif np.isscalar(sigma):
         invSigma_flat_k = np.ones(N) * sigma**2
